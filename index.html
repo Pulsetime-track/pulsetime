@@ -170,6 +170,23 @@
   .clientRow .cInfo b{ font-size:13px; }
   .clientRow .cInfo span{ font-size:11px; color:var(--text-muted); }
   .miniBtn{ background:transparent; color:var(--text-muted); font-size:11px; padding:5px 8px; }
+
+  .teamRow{
+    display:flex; align-items:center; justify-content:space-between; padding:14px 16px;
+    background:var(--slate); border-radius:8px; margin-bottom:8px; border-left:3px solid var(--brass);
+  }
+  .teamRow.pendingRow{ border-left-color:#D4AF5F; }
+  .teamRow .tInfo{ display:flex; flex-direction:column; gap:2px; }
+  .teamRow .tInfo b{ font-size:13px; }
+  .teamRow .tInfo span{ font-size:11px; color:var(--text-muted); }
+  .roleBadge{ font-size:9px; font-weight:700; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.04em; margin-left:8px; }
+  .roleBadge.admin{ background:var(--brass); color:var(--ink); }
+  .roleBadge.staff{ background:#3a4560; color:var(--text-muted); }
+  .teamActions{ display:flex; gap:8px; }
+  .approveBtn{ background:var(--green); color:#fff; font-weight:700; font-size:12px; padding:8px 14px; border-radius:6px; }
+  .approveBtn:hover{ background:#3f8459; }
+  .denyBtn{ background:transparent; color:var(--text-muted); font-size:12px; padding:8px 10px; border-radius:6px; border:1px solid #3a4560; }
+  .denyBtn:hover{ color:var(--red); border-color:var(--red); }
   .miniBtn:hover{ color:var(--red); }
 
   .btnBrass{ background:var(--brass); color:var(--ink); font-weight:700; padding:11px 16px; border-radius:6px; font-size:13px; }
@@ -248,6 +265,16 @@
   </div>
 </div>
 
+<!-- ================= PENDING APPROVAL SCREEN ================= -->
+<div id="pendingScreen" style="display:none; min-height:100vh; align-items:center; justify-content:center; padding:24px; background: radial-gradient(circle at 20% 20%, #26314a 0%, #1C2333 60%);">
+  <div class="authCard" style="text-align:center;">
+    <div class="eyebrow" style="color:#b8934a;">PulseTime</div>
+    <h1>Waiting for approval</h1>
+    <p class="sub">Your account has been created, but an admin needs to approve you before you can punch in. This page will update automatically once you're approved.</p>
+    <button class="signOutBtn" id="pendingSignOutBtn" style="width:100%; padding:12px; border-radius:6px; margin-top:8px;">Sign out</button>
+  </div>
+</div>
+
 <!-- ================= APP SCREEN ================= -->
 <div id="appScreen">
   <header class="topbar">
@@ -268,6 +295,7 @@
     <button data-tab="clock" class="active">Time Clock</button>
     <button data-tab="tasks">Tasks</button>
     <button data-tab="clients">Clients</button>
+    <button data-tab="team">Team</button>
   </nav>
 
   <main>
@@ -295,7 +323,7 @@
       <div class="card">
         <table id="entriesTable">
           <thead>
-            <tr><th>Client</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th></th></tr>
+            <tr id="entriesHeadRow"><th>Client</th><th id="byColHead" style="display:none;">By</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th></th></tr>
           </thead>
           <tbody id="entriesBody"></tbody>
         </table>
@@ -379,6 +407,17 @@
         </div>
       </div>
     </section>
+
+    <!-- ---------- TEAM PANEL ---------- -->
+    <section class="panel" id="panel-team">
+      <h2 class="sectionTitle">Pending approval</h2>
+      <div id="pendingList" style="margin-bottom:28px;"></div>
+      <div class="emptyState" id="pendingEmpty" style="display:none;">No one is waiting on approval right now.</div>
+
+      <h2 class="sectionTitle">Team members</h2>
+      <div id="teamList"></div>
+      <div class="emptyState" id="teamEmpty" style="display:none;">No approved teammates yet.</div>
+    </section>
   </main>
 </div>
 
@@ -393,7 +432,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, addDoc, updateDoc, deleteDoc, doc,
-  onSnapshot, query, where, orderBy, serverTimestamp, Timestamp
+  onSnapshot, query, where, orderBy, serverTimestamp, Timestamp,
+  getDoc, setDoc, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // ---------------------------------------------------------------
@@ -509,10 +549,13 @@ tzSelect.value = "Asia/Manila";
 
 // ---------------- State ----------------
 let currentUser = null;
+let isAdmin = false;    // resolved from tt_users/{uid} on login
+let userStatus = null;  // 'pending' | 'approved'
 let clients = [];       // {id, name, timezone, color}
 let entries = [];       // {id, clientId, clientName, start, end}
 let tasks = [];         // {id, clientId, clientName, title, dueDate, status, priority}
-let unsubClients=null, unsubEntries=null, unsubTasks=null;
+let teamMembers = [];   // {id, email, role, status}
+let unsubClients=null, unsubEntries=null, unsubTasks=null, unsubTeam=null;
 let runningEntry = null; // currently punched-in entry, live from entries
 
 // ---------------- Toast ----------------
@@ -575,30 +618,110 @@ function friendlyAuthError(code){
 }
 
 document.getElementById('signOutBtn').addEventListener('click', ()=> signOut(auth));
+document.getElementById('pendingSignOutBtn').addEventListener('click', ()=> signOut(auth));
 
 // ---------------- Auth state ----------------
-onAuthStateChanged(auth, (user)=>{
+let unsubOwnUserDoc = null;
+
+onAuthStateChanged(auth, async (user)=>{
   currentUser = user;
   if(user){
     document.getElementById('authScreen').style.display = 'none';
-    document.getElementById('appScreen').style.display = 'block';
     document.getElementById('userChip').textContent = user.email;
-    attachListeners();
+    await resolveRole();
+    if(userStatus !== 'approved'){
+      document.getElementById('appScreen').style.display = 'none';
+      document.getElementById('pendingScreen').style.display = 'flex';
+      watchOwnApproval();
+    } else {
+      document.getElementById('pendingScreen').style.display = 'none';
+      document.getElementById('appScreen').style.display = 'block';
+      applyRoleUI();
+      attachListeners();
+    }
   } else {
     document.getElementById('authScreen').style.display = 'flex';
     document.getElementById('appScreen').style.display = 'none';
+    document.getElementById('pendingScreen').style.display = 'none';
     if(unsubClients) unsubClients();
     if(unsubEntries) unsubEntries();
     if(unsubTasks) unsubTasks();
-    clients = []; entries = []; tasks = [];
+    if(unsubTeam) unsubTeam();
+    if(unsubOwnUserDoc) unsubOwnUserDoc();
+    clients = []; entries = []; tasks = []; isAdmin = false; userStatus = null;
   }
 });
+
+// Live-watches the signed-in user's own tt_users doc while they're on the
+// pending screen, so approval takes effect immediately without a refresh.
+function watchOwnApproval(){
+  if(unsubOwnUserDoc) unsubOwnUserDoc();
+  unsubOwnUserDoc = onSnapshot(doc(db,'tt_users',currentUser.uid), (snap)=>{
+    if(snap.exists() && snap.data().status === 'approved'){
+      location.reload();
+    }
+  });
+}
+
+// ---------------- Role resolution (admin vs staff, with approval gate) ----------------
+// tt_users/{uid} holds { email, role: 'admin'|'staff', status: 'pending'|'approved' }.
+// The very first person ever to sign in bootstraps tt_config/meta and becomes
+// the founding admin, auto-approved. Everyone who signs up afterward starts
+// as staff with status 'pending' until an admin approves them on the Team tab.
+async function resolveRole(){
+  const uid = currentUser.uid;
+  const userRef = doc(db,'tt_users',uid);
+  try{
+    const snap = await getDoc(userRef);
+    if(snap.exists()){
+      const data = snap.data();
+      isAdmin = data.role === 'admin';
+      userStatus = data.status || 'pending';
+    } else {
+      const metaRef = doc(db,'tt_config','meta');
+      const metaSnap = await getDoc(metaRef);
+      if(!metaSnap.exists()){
+        const batch = writeBatch(db);
+        batch.set(userRef, { email: currentUser.email, role:'admin', status:'approved', createdAt: serverTimestamp() });
+        batch.set(metaRef, { founded: true, createdAt: serverTimestamp() });
+        await batch.commit();
+        isAdmin = true; userStatus = 'approved';
+        toast('You are the founding admin of this workspace');
+      } else {
+        await setDoc(userRef, { email: currentUser.email, role:'staff', status:'pending', createdAt: serverTimestamp() });
+        isAdmin = false; userStatus = 'pending';
+      }
+    }
+  }catch(err){
+    console.error(err);
+    isAdmin = false; userStatus = 'pending'; // fail safe: unknown state defaults to the most restricted view
+  }
+}
+
+function applyRoleUI(){
+  document.body.classList.toggle('isStaff', !isAdmin);
+  const tasksTab = document.querySelector('nav.tabs button[data-tab="tasks"]');
+  const clientsTab = document.querySelector('nav.tabs button[data-tab="clients"]');
+  const teamTab = document.querySelector('nav.tabs button[data-tab="team"]');
+  if(tasksTab) tasksTab.style.display = isAdmin ? '' : 'none';
+  if(clientsTab) clientsTab.style.display = isAdmin ? '' : 'none';
+  if(teamTab) teamTab.style.display = isAdmin ? '' : 'none';
+  // if a staff account is currently sitting on a hidden tab, snap back to Time Clock
+  if(!isAdmin){
+    const activeTab = document.querySelector('nav.tabs button.active');
+    if(activeTab && (activeTab.dataset.tab==='tasks' || activeTab.dataset.tab==='clients' || activeTab.dataset.tab==='team')){
+      document.querySelector('nav.tabs button[data-tab="clock"]').click();
+    }
+  }
+}
 
 // ---------------- Firestore listeners ----------------
 function attachListeners(){
   const uid = currentUser.uid;
 
-  const clientsQ = query(collection(db,'tt_clients'), where('ownerUid','==',uid));
+  // Clients are workspace-wide: every signed-in teammate needs to see the
+  // same client list to punch in against it, even though only admins can edit it.
+  const clientsQ = query(collection(db,'tt_clients'));
   unsubClients = onSnapshot(clientsQ, (snap)=>{
     clients = snap.docs.map(d=>({id:d.id, ...d.data()}));
     clients.sort((a,b)=> a.name.localeCompare(b.name));
@@ -607,10 +730,13 @@ function attachListeners(){
     populateClientSelects();
   }, (err)=> toast('Clients sync error: '+err.message));
 
-  const entriesQ = query(collection(db,'tt_entries'), where('ownerUid','==',uid), orderBy('start','desc'));
+  // Admins see every teammate's punches; staff only see their own.
+  const entriesQ = isAdmin
+    ? query(collection(db,'tt_entries'), orderBy('start','desc'))
+    : query(collection(db,'tt_entries'), where('ownerUid','==',uid), orderBy('start','desc'));
   unsubEntries = onSnapshot(entriesQ, (snap)=>{
     entries = snap.docs.map(d=>({id:d.id, ...d.data()}));
-    runningEntry = entries.find(e=> !e.end) || null;
+    runningEntry = entries.find(e=> !e.end && e.ownerUid===uid) || null;
     renderEntries();
     updatePunchUI();
   }, (err)=> toast('Entries sync error: '+err.message));
@@ -620,6 +746,80 @@ function attachListeners(){
     tasks = snap.docs.map(d=>({id:d.id, ...d.data()}));
     renderTasks();
   }, (err)=> toast('Tasks sync error: '+err.message));
+
+  if(isAdmin){
+    const teamQ = query(collection(db,'tt_users'));
+    unsubTeam = onSnapshot(teamQ, (snap)=>{
+      teamMembers = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      teamMembers.sort((a,b)=> (a.email||'').localeCompare(b.email||''));
+      renderTeam();
+    }, (err)=> toast('Team sync error: '+err.message));
+  }
+}
+
+// ---------------- Team (approvals) ----------------
+function renderTeam(){
+  const pendingWrap = document.getElementById('pendingList');
+  const pendingEmpty = document.getElementById('pendingEmpty');
+  const teamWrap = document.getElementById('teamList');
+  const teamEmpty = document.getElementById('teamEmpty');
+
+  const pending = teamMembers.filter(m=> m.status==='pending');
+  const approved = teamMembers.filter(m=> m.status==='approved');
+
+  pendingEmpty.style.display = pending.length===0 ? 'block' : 'none';
+  pendingWrap.innerHTML = pending.map(m=>`
+    <div class="teamRow pendingRow">
+      <div class="tInfo"><b>${escapeHtml(m.email)}</b><span>Requested access</span></div>
+      <div class="teamActions">
+        <button class="approveBtn" data-id="${m.id}" data-action="approve">Approve</button>
+        <button class="denyBtn" data-id="${m.id}" data-action="deny">Deny</button>
+      </div>
+    </div>
+  `).join('');
+
+  teamEmpty.style.display = approved.length===0 ? 'block' : 'none';
+  teamWrap.innerHTML = approved.map(m=>{
+    const isSelf = m.id === currentUser.uid;
+    return `
+    <div class="teamRow">
+      <div class="tInfo"><b>${escapeHtml(m.email)}<span class="roleBadge ${m.role}">${m.role}</span></b><span>${isSelf ? 'This is you' : 'Approved'}</span></div>
+      <div class="teamActions">
+        ${isSelf ? '' : `
+          <button class="denyBtn" data-id="${m.id}" data-role="${m.role}" data-action="toggleRole">${m.role==='admin' ? 'Make staff' : 'Make admin'}</button>
+          <button class="denyBtn" data-id="${m.id}" data-action="remove">Remove access</button>
+        `}
+      </div>
+    </div>`;
+  }).join('');
+
+  pendingWrap.querySelectorAll('[data-action="approve"]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      try{ await updateDoc(doc(db,'tt_users',btn.dataset.id), { status:'approved' }); toast('Approved'); }
+      catch(err){ toast('Could not approve: '+err.message); }
+    });
+  });
+  pendingWrap.querySelectorAll('[data-action="deny"]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('Deny this request? They can request again by signing in.')) return;
+      try{ await deleteDoc(doc(db,'tt_users',btn.dataset.id)); toast('Request denied'); }
+      catch(err){ toast('Could not deny: '+err.message); }
+    });
+  });
+  teamWrap.querySelectorAll('[data-action="toggleRole"]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const newRole = btn.dataset.role === 'admin' ? 'staff' : 'admin';
+      try{ await updateDoc(doc(db,'tt_users',btn.dataset.id), { role:newRole }); toast('Role updated'); }
+      catch(err){ toast('Could not update role: '+err.message); }
+    });
+  });
+  teamWrap.querySelectorAll('[data-action="remove"]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('Remove this person\'s access? They can request again by signing in.')) return;
+      try{ await deleteDoc(doc(db,'tt_users',btn.dataset.id)); toast('Access removed'); }
+      catch(err){ toast('Could not remove access: '+err.message); }
+    });
+  });
 }
 
 // ---------------- Tabs ----------------
@@ -780,7 +980,7 @@ punchBtn.addEventListener('click', async ()=>{
       await addDoc(collection(db,'tt_entries'), {
         clientId: client.id, clientName: client.name, clientColor: client.color||'#B8934A',
         clientTimezone: client.timezone,
-        start: serverTimestamp(), end: null, ownerUid: currentUser.uid
+        start: serverTimestamp(), end: null, ownerUid: currentUser.uid, ownerEmail: currentUser.email
       });
       toast('Punched in to '+client.name);
     }catch(err){ toast('Could not punch in: '+err.message); }
@@ -796,6 +996,7 @@ function flashStamp(){
 function renderEntries(){
   const body = document.getElementById('entriesBody');
   const empty = document.getElementById('entriesEmpty');
+  document.getElementById('byColHead').style.display = isAdmin ? '' : 'none';
   if(entries.length===0){ body.innerHTML=''; empty.style.display='block'; return; }
   empty.style.display='none';
   body.innerHTML = entries.slice(0,50).map(e=>{
@@ -808,11 +1009,12 @@ function renderEntries(){
     const durStr = endD && startD ? formatDuration(endD - startD) : null;
     return `<tr>
       <td><span class="swatch" style="background:${e.clientColor||'#B8934A'}"></span>${escapeHtml(e.clientName||'—')}</td>
+      <td style="display:${isAdmin?'':'none'};">${escapeHtml(e.ownerEmail||'—')}</td>
       <td>${dateStr}</td>
       <td class="mono">${inStr}</td>
       <td class="mono">${outStr || '<span class="runningPill">RUNNING</span>'}</td>
       <td class="durationCell">${durStr ? formatHM(endD-startD) : '—'}</td>
-      <td class="rowActions"><button data-id="${e.id}" data-action="delEntry">Delete</button></td>
+      <td class="rowActions">${isAdmin ? `<button data-id="${e.id}" data-action="delEntry">Delete</button>` : ''}</td>
     </tr>`;
   }).join('');
   body.querySelectorAll('[data-action="delEntry"]').forEach(btn=>{
