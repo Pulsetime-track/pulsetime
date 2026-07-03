@@ -216,6 +216,23 @@
   .priTag.low{ background:#3a4560; color:var(--text-muted); }
   .taskDel{ background:transparent; color:var(--text-muted); font-size:16px; padding:2px 6px; }
   .taskDel:hover{ color:var(--red); }
+  .assigneeTag{ font-size:10px; color:var(--brass-bright); font-weight:600; }
+  .taskUpdateBox{ margin-top:10px; padding-top:10px; border-top:1px solid #3a4560; }
+  .taskUpdateBox textarea{
+    width:100%; min-height:56px; padding:8px 10px; border-radius:6px; border:1px solid #cfc8b6;
+    background:#fbfaf6; color:var(--text-dark); font-size:13px; font-family:'Inter',sans-serif; resize:vertical; margin-bottom:8px;
+  }
+  .taskUpdateActions{ display:flex; gap:8px; flex-wrap:wrap; }
+  .statusBtn{ font-size:11px; font-weight:700; padding:7px 12px; border-radius:6px; letter-spacing:.02em; }
+  .statusBtn.ongoing{ background:var(--brass); color:var(--ink); }
+  .statusBtn.ongoing:hover{ background:var(--brass-bright); }
+  .statusBtn.done{ background:var(--green); color:#fff; }
+  .statusBtn.done:hover{ background:#3f8459; }
+  .statusPill{ font-size:9px; font-weight:700; padding:2px 8px; border-radius:10px; text-transform:uppercase; letter-spacing:.04em; }
+  .statusPill.pending{ background:#3a4560; color:var(--text-muted); }
+  .statusPill.ongoing{ background:var(--brass); color:var(--ink); }
+  .statusPill.done{ background:var(--green); color:#fff; }
+  .remarksNote{ font-size:12px; color:var(--text-muted); margin-top:6px; font-style:italic; }
 
   .formRow{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
   .formRow > div{ flex:1; min-width:140px; }
@@ -261,6 +278,9 @@
     <div class="authToggle">
       <span id="authToggleText">Setting this up for the first time?</span>
       <a id="authToggleLink">Create the first account</a>
+    </div>
+    <div class="authToggle" id="forgotPassRow">
+      <a id="forgotPassLink">Forgot password?</a>
     </div>
   </div>
 </div>
@@ -318,6 +338,7 @@
           <button class="punchBtn in" id="punchBtn">Punch In</button>
         </div>
       </div>
+      <div id="pendingTaskWarning" style="display:none; background:#3a2a1e; border:1px solid var(--brass); color:#f0d9a8; padding:12px 18px; border-radius:8px; font-size:13px; margin:14px 0 0;"></div>
 
       <h2 class="sectionTitle">Recent entries</h2>
       <div class="card">
@@ -333,38 +354,46 @@
 
     <!-- ---------- TASKS PANEL ---------- -->
     <section class="panel" id="panel-tasks">
-      <h2 class="sectionTitle">Add a task</h2>
-      <div class="card" style="margin-bottom:24px;">
-        <form id="taskForm">
-          <div class="formRow">
-            <div>
-              <label for="taskClient">Client</label>
-              <select id="taskClient"></select>
+      <div id="adminTaskFormWrap">
+        <h2 class="sectionTitle">Add a task</h2>
+        <div class="card" style="margin-bottom:24px;">
+          <form id="taskForm">
+            <div class="formRow">
+              <div>
+                <label for="taskClient">Client</label>
+                <select id="taskClient"></select>
+              </div>
+              <div style="flex:2;">
+                <label for="taskTitle">Task</label>
+                <input type="text" id="taskTitle" placeholder="e.g. Draft Q3 invoice" required>
+              </div>
             </div>
-            <div style="flex:2;">
-              <label for="taskTitle">Task</label>
-              <input type="text" id="taskTitle" placeholder="e.g. Draft Q3 invoice" required>
+            <div class="formRow">
+              <div>
+                <label for="taskAssignee">Assign to</label>
+                <select id="taskAssignee">
+                  <option value="">Unassigned</option>
+                </select>
+              </div>
+              <div>
+                <label for="taskDue">Due date</label>
+                <input type="date" id="taskDue">
+              </div>
+              <div>
+                <label for="taskPriority">Priority</label>
+                <select id="taskPriority">
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
             </div>
-          </div>
-          <div class="formRow">
-            <div>
-              <label for="taskDue">Due date</label>
-              <input type="date" id="taskDue">
-            </div>
-            <div>
-              <label for="taskPriority">Priority</label>
-              <select id="taskPriority">
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="low">Low</option>
-              </select>
-            </div>
-          </div>
-          <button type="submit" class="btnBrass">Add task</button>
-        </form>
+            <button type="submit" class="btnBrass">Add task</button>
+          </form>
+        </div>
       </div>
 
-      <h2 class="sectionTitle">Task board</h2>
+      <h2 class="sectionTitle" id="taskBoardTitle">Task board</h2>
       <div class="taskFilters" id="taskFilters">
         <button data-filter="open" class="active">Open</button>
         <button data-filter="done">Done</button>
@@ -428,7 +457,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword,
-  createUserWithEmailAndPassword, signOut
+  createUserWithEmailAndPassword, signOut, sendPasswordResetEmail
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, addDoc, updateDoc, deleteDoc, doc,
@@ -572,6 +601,8 @@ const authToggleLink = document.getElementById('authToggleLink');
 const authToggleText = document.getElementById('authToggleText');
 const authSubmitBtn = document.getElementById('authSubmitBtn');
 const authError = document.getElementById('authError');
+const forgotPassRow = document.getElementById('forgotPassRow');
+const forgotPassLink = document.getElementById('forgotPassLink');
 
 authToggleLink.addEventListener('click', ()=>{
   authMode = authMode === 'signin' ? 'signup' : 'signin';
@@ -580,13 +611,30 @@ authToggleLink.addEventListener('click', ()=>{
     authSubmitBtn.textContent = 'Create account';
     authToggleText.textContent = 'Already have an account?';
     authToggleLink.textContent = 'Sign in';
+    forgotPassRow.style.display = 'none';
   } else {
     authTitle.textContent = 'Sign in';
     authSubmitBtn.textContent = 'Sign in';
     authToggleText.textContent = 'Setting this up for the first time?';
     authToggleLink.textContent = 'Create the first account';
+    forgotPassRow.style.display = 'block';
   }
   authError.textContent = '';
+});
+
+forgotPassLink.addEventListener('click', async ()=>{
+  const email = document.getElementById('authEmail').value.trim();
+  if(!email){
+    authError.textContent = 'Type your email above first, then click "Forgot password?" again.';
+    return;
+  }
+  try{
+    await sendPasswordResetEmail(auth, email);
+    authError.textContent = '';
+    toast('Password reset email sent to '+email);
+  }catch(err){
+    authError.textContent = friendlyAuthError(err.code);
+  }
 });
 
 document.getElementById('authForm').addEventListener('submit', async (e)=>{
@@ -703,13 +751,15 @@ function applyRoleUI(){
   const tasksTab = document.querySelector('nav.tabs button[data-tab="tasks"]');
   const clientsTab = document.querySelector('nav.tabs button[data-tab="clients"]');
   const teamTab = document.querySelector('nav.tabs button[data-tab="team"]');
-  if(tasksTab) tasksTab.style.display = isAdmin ? '' : 'none';
+  if(tasksTab) tasksTab.textContent = isAdmin ? 'Tasks' : 'My Tasks';
   if(clientsTab) clientsTab.style.display = isAdmin ? '' : 'none';
   if(teamTab) teamTab.style.display = isAdmin ? '' : 'none';
+  document.getElementById('adminTaskFormWrap').style.display = isAdmin ? 'block' : 'none';
+  document.getElementById('taskBoardTitle').textContent = isAdmin ? 'Task board' : 'Tasks assigned to you';
   // if a staff account is currently sitting on a hidden tab, snap back to Time Clock
   if(!isAdmin){
     const activeTab = document.querySelector('nav.tabs button.active');
-    if(activeTab && (activeTab.dataset.tab==='tasks' || activeTab.dataset.tab==='clients' || activeTab.dataset.tab==='team')){
+    if(activeTab && (activeTab.dataset.tab==='clients' || activeTab.dataset.tab==='team')){
       document.querySelector('nav.tabs button[data-tab="clock"]').click();
     }
   }
@@ -741,10 +791,14 @@ function attachListeners(){
     updatePunchUI();
   }, (err)=> toast('Entries sync error: '+err.message));
 
-  const tasksQ = query(collection(db,'tt_tasks'), where('ownerUid','==',uid), orderBy('createdAt','desc'));
+  // Admins see every task in the workspace; staff only see tasks assigned to them.
+  const tasksQ = isAdmin
+    ? query(collection(db,'tt_tasks'), orderBy('createdAt','desc'))
+    : query(collection(db,'tt_tasks'), where('assignedToUid','==',uid), orderBy('createdAt','desc'));
   unsubTasks = onSnapshot(tasksQ, (snap)=>{
     tasks = snap.docs.map(d=>({id:d.id, ...d.data()}));
     renderTasks();
+    updatePendingTaskWarning();
   }, (err)=> toast('Tasks sync error: '+err.message));
 
   if(isAdmin){
@@ -753,8 +807,18 @@ function attachListeners(){
       teamMembers = snap.docs.map(d=>({id:d.id, ...d.data()}));
       teamMembers.sort((a,b)=> (a.email||'').localeCompare(b.email||''));
       renderTeam();
+      populateAssigneeSelect();
     }, (err)=> toast('Team sync error: '+err.message));
   }
+}
+
+function populateAssigneeSelect(){
+  const sel = document.getElementById('taskAssignee');
+  const prev = sel.value;
+  const approved = teamMembers.filter(m=> m.status==='approved');
+  sel.innerHTML = '<option value="">Unassigned</option>' +
+    approved.map(m=> `<option value="${m.id}" data-email="${escapeHtml(m.email)}">${escapeHtml(m.email)}${m.role==='admin' ? ' (admin)' : ''}</option>`).join('');
+  if(approved.some(m=>m.id===prev)) sel.value = prev;
 }
 
 // ---------------- Team (approvals) ----------------
@@ -939,6 +1003,21 @@ function updatePunchUI(){
     stopElapsedTimer();
     elapsedDisplay.textContent = '00:00:00';
   }
+  updatePendingTaskWarning();
+}
+
+function updatePendingTaskWarning(){
+  const banner = document.getElementById('pendingTaskWarning');
+  if(!banner) return;
+  if(!isAdmin && runningEntry){
+    const blocking = pendingAssignedTasksForCurrentUser();
+    if(blocking.length > 0){
+      banner.style.display = 'block';
+      banner.textContent = `⚠️ You have ${blocking.length} assigned task${blocking.length>1?'s':''} that still ${blocking.length>1?'need':'needs'} an update before you can punch out. Go to My Tasks, mark ${blocking.length>1?'them':'it'} Ongoing or Done, and add remarks.`;
+      return;
+    }
+  }
+  banner.style.display = 'none';
 }
 
 function startElapsedTimer(){
@@ -964,6 +1043,16 @@ function formatDuration(ms){
 }
 
 punchBtn.addEventListener('click', async ()=>{
+  if(runningEntry && !isAdmin){
+    const blocking = pendingAssignedTasksForCurrentUser();
+    if(blocking.length > 0){
+      toast(`Update ${blocking.length} pending task${blocking.length>1?'s':''} before punching out`);
+      document.querySelector('nav.tabs button[data-tab="tasks"]').click();
+      const filterOpenBtn = document.querySelector('#taskFilters button[data-filter="open"]');
+      if(filterOpenBtn) filterOpenBtn.click();
+      return;
+    }
+  }
   flashStamp();
   if(runningEntry){
     // punch out
@@ -1042,10 +1131,15 @@ document.getElementById('taskForm').addEventListener('submit', async (e)=>{
   const priority = document.getElementById('taskPriority').value;
   if(!title){ return; }
   if(!client){ toast('Add a client first'); return; }
+  const assigneeSel = document.getElementById('taskAssignee');
+  const assignedToUid = assigneeSel.value || null;
+  const assignedToEmail = assignedToUid ? assigneeSel.selectedOptions[0].dataset.email : null;
   try{
     await addDoc(collection(db,'tt_tasks'), {
       clientId: client.id, clientName: client.name, clientColor: client.color||'#B8934A',
-      title, dueDate, priority, status:'open', ownerUid: currentUser.uid, createdAt: serverTimestamp()
+      title, dueDate, priority, status:'pending', remarks:'', remarksUpdatedAt: null,
+      assignedToUid, assignedToEmail,
+      ownerUid: currentUser.uid, createdAt: serverTimestamp()
     });
     document.getElementById('taskForm').reset();
     toast('Task added');
@@ -1069,32 +1163,77 @@ function renderTasks(){
   if(taskFilter==='done') list = tasks.filter(t=>t.status==='done');
   if(list.length===0){ wrap.innerHTML=''; empty.style.display='block'; return; }
   empty.style.display='none';
-  wrap.innerHTML = list.map(t=>`
-    <div class="taskItem ${t.status==='done'?'done':''}">
-      <button class="taskCheck" data-id="${t.id}" data-action="toggle" data-status="${t.status}">${t.status==='done'?'✓':''}</button>
-      <div class="taskBody">
+
+  wrap.innerHTML = list.map(t=>{
+    const status = t.status || 'pending';
+    const metaLine = `
+      <span><span class="swatch" style="background:${t.clientColor||'#B8934A'}"></span>${escapeHtml(t.clientName||'—')}</span>
+      ${t.dueDate ? `<span>Due ${t.dueDate}</span>` : ''}
+      <span class="priTag ${t.priority}">${t.priority}</span>
+      ${isAdmin ? `<span class="assigneeTag">${t.assignedToEmail ? '→ '+escapeHtml(t.assignedToEmail) : 'Unassigned'}</span>` : ''}
+      <span class="statusPill ${status}">${status}</span>
+    `;
+    if(isAdmin){
+      return `<div class="taskItem ${status==='done'?'done':''}">
+        <button class="taskCheck" data-id="${t.id}" data-action="toggle" data-status="${status}">${status==='done'?'✓':''}</button>
+        <div class="taskBody">
+          <div class="taskTitle">${escapeHtml(t.title)}</div>
+          <div class="taskMeta">${metaLine}</div>
+          ${t.remarks ? `<div class="remarksNote">"${escapeHtml(t.remarks)}"</div>` : ''}
+        </div>
+        <button class="taskDel" data-id="${t.id}" data-action="delTask">✕</button>
+      </div>`;
+    }
+    // Staff view: no checkbox, no delete — just a status/remarks update box.
+    return `<div class="taskItem ${status==='done'?'done':''}">
+      <div class="taskBody" style="width:100%;">
         <div class="taskTitle">${escapeHtml(t.title)}</div>
-        <div class="taskMeta">
-          <span><span class="swatch" style="background:${t.clientColor||'#B8934A'}"></span>${escapeHtml(t.clientName||'—')}</span>
-          ${t.dueDate ? `<span>Due ${t.dueDate}</span>` : ''}
-          <span class="priTag ${t.priority}">${t.priority}</span>
+        <div class="taskMeta">${metaLine}</div>
+        <div class="taskUpdateBox">
+          <textarea placeholder="Add remarks about this task..." data-id="${t.id}" class="remarksInput">${escapeHtml(t.remarks||'')}</textarea>
+          <div class="taskUpdateActions">
+            <button class="statusBtn ongoing" data-id="${t.id}" data-status="ongoing">Save as Ongoing</button>
+            <button class="statusBtn done" data-id="${t.id}" data-status="done">Save as Done</button>
+          </div>
         </div>
       </div>
-      <button class="taskDel" data-id="${t.id}" data-action="delTask">✕</button>
-    </div>
-  `).join('');
-  wrap.querySelectorAll('[data-action="toggle"]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
-      const newStatus = btn.dataset.status === 'done' ? 'open' : 'done';
-      await updateDoc(doc(db,'tt_tasks',btn.dataset.id), { status:newStatus });
+    </div>`;
+  }).join('');
+
+  if(isAdmin){
+    wrap.querySelectorAll('[data-action="toggle"]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const newStatus = btn.dataset.status === 'done' ? 'pending' : 'done';
+        await updateDoc(doc(db,'tt_tasks',btn.dataset.id), { status:newStatus });
+      });
     });
-  });
-  wrap.querySelectorAll('[data-action="delTask"]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
-      if(!confirm('Delete this task?')) return;
-      await deleteDoc(doc(db,'tt_tasks',btn.dataset.id));
+    wrap.querySelectorAll('[data-action="delTask"]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        if(!confirm('Delete this task?')) return;
+        await deleteDoc(doc(db,'tt_tasks',btn.dataset.id));
+      });
     });
-  });
+  } else {
+    wrap.querySelectorAll('.statusBtn').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const taskId = btn.dataset.id;
+        const remarksVal = wrap.querySelector(`.remarksInput[data-id="${taskId}"]`).value.trim();
+        if(!remarksVal){ toast('Add a remark before saving your update'); return; }
+        try{
+          await updateDoc(doc(db,'tt_tasks',taskId), {
+            status: btn.dataset.status, remarks: remarksVal, remarksUpdatedAt: serverTimestamp()
+          });
+          toast('Task updated');
+        }catch(err){ toast('Could not update task: '+err.message); }
+      });
+    });
+  }
+}
+
+// A staff member can't punch out while any task assigned to them is still
+// sitting at "pending" — they must save an Ongoing or Done update first.
+function pendingAssignedTasksForCurrentUser(){
+  return tasks.filter(t=> t.assignedToUid===currentUser.uid && (t.status||'pending')==='pending');
 }
 
 // ---------------- Utils ----------------
