@@ -1213,8 +1213,8 @@ function renderEntries(){
     const startD = e.start && e.start.toDate ? e.start.toDate() : null;
     const endD = e.end && e.end.toDate ? e.end.toDate() : null;
     const dateStr = startD ? new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:tz}).format(startD) : '—';
-    const inStr = startD ? new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) : '—';
-    const outStr = endD ? new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) : '';
+    const inStr = startD ? new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) + ' ' + tzAbbr(startD, tz) : '—';
+    const outStr = endD ? new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) + ' ' + tzAbbr(endD, tz) : '';
     const durStr = endD && startD ? formatDuration(endD - startD) : null;
     return `<tr>
       <td><span class="swatch" style="background:${e.clientColor||'#B8934A'}"></span>${escapeHtml(e.clientName||'—')}</td>
@@ -1232,6 +1232,17 @@ function renderEntries(){
       await deleteDoc(doc(db,'tt_entries',btn.dataset.id));
     });
   });
+}
+
+// Returns a short zone label like "PHT" or "GMT-5" for a given moment + IANA timezone.
+function tzAbbr(date, tz){
+  try{
+    const parts = new Intl.DateTimeFormat('en-US',{timeZone:tz, timeZoneName:'short'}).formatToParts(date);
+    const part = parts.find(p=>p.type==='timeZoneName');
+    return part ? `(${part.value})` : '';
+  }catch(e){
+    return '';
+  }
 }
 
 function formatHM(ms){
@@ -1427,8 +1438,8 @@ function exportReportCSV(){
     const startD = e.start.toDate();
     const endD = e.end.toDate();
     const dateStr = new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:tz}).format(startD);
-    const inStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD);
-    const outStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD);
+    const inStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) + ' ' + tzAbbr(startD, tz);
+    const outStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) + ' ' + tzAbbr(endD, tz);
     const hours = ((endD - startD) / 3600000).toFixed(2);
     rows.push([e.clientName||'', e.ownerEmail||'', dateStr, inStr, outStr, hours]);
   });
