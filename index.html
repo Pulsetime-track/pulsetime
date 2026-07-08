@@ -154,6 +154,15 @@
   .activePunchItem .apElapsed{ font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:700; color:var(--ink); }
   .activePunchItem .apOutBtn{ background:var(--red); color:#fff; font-weight:700; padding:10px 20px; border-radius:6px; font-size:13px; }
   .activePunchItem .apOutBtn:hover{ background:#a8422e; }
+  .apTaskBox{ width:100%; display:flex; gap:8px; margin-top:10px; padding-top:10px; border-top:1px solid #d8d2c2; }
+  .apTaskBox input{
+    flex:1; padding:9px 12px; border-radius:6px; border:1px solid #cfc8b6;
+    background:#fbfaf6; color:var(--text-dark); font-size:13px; font-family:'Inter',sans-serif; margin-bottom:0;
+  }
+  .apTaskAddBtn{ background:var(--brass); color:var(--ink); font-weight:700; padding:9px 16px; border-radius:6px; font-size:12px; white-space:nowrap; }
+  .apTaskAddBtn:hover{ background:var(--brass-bright); }
+  .clientTaskGroup{ margin-bottom:22px; }
+  .clientTaskGroup .groupHeader{ display:flex; align-items:center; gap:8px; font-size:13px; font-weight:700; color:var(--brass-bright); margin-bottom:10px; letter-spacing:.02em; }
   .stampFlash{ position:absolute; inset:0; background:var(--brass); opacity:0; pointer-events:none; }
   .stampFlash.flash{ animation: flashIt .35s ease; }
   @keyframes flashIt{ 0%{opacity:.35;} 100%{opacity:0;} }
@@ -1129,12 +1138,50 @@ function renderActivePunches(){
       </div>
       <div class="apElapsed mono" data-elapsed-for="${e.id}">00:00:00</div>
       <button class="apOutBtn" data-id="${e.id}" data-action="punchOut">Punch Out</button>
+      ${isAdmin ? '' : `
+        <div class="apTaskBox">
+          <input type="text" placeholder="What are you working on for ${escapeHtml(e.clientName||'this client')}?"
+                 data-client-id="${e.clientId}" class="apTaskInput">
+          <button class="apTaskAddBtn" data-client-id="${e.clientId}" data-client-name="${escapeHtml(e.clientName||'')}" data-client-color="${e.clientColor||'#B8934A'}">Add task</button>
+        </div>
+      `}
     </div>
   `).join('');
   list.querySelectorAll('[data-action="punchOut"]').forEach(btn=>{
     btn.addEventListener('click', ()=> handlePunchOut(btn.dataset.id));
   });
+  list.querySelectorAll('.apTaskAddBtn').forEach(btn=>{
+    btn.addEventListener('click', ()=> addQuickTask(btn));
+  });
+  list.querySelectorAll('.apTaskInput').forEach(input=>{
+    input.addEventListener('keydown', (ev)=>{
+      if(ev.key === 'Enter'){
+        ev.preventDefault();
+        const btn = list.querySelector(`.apTaskAddBtn[data-client-id="${input.dataset.clientId}"]`);
+        if(btn) btn.click();
+      }
+    });
+  });
   startElapsedTimer();
+}
+
+async function addQuickTask(btn){
+  const clientId = btn.dataset.clientId;
+  const clientName = btn.dataset.clientName;
+  const clientColor = btn.dataset.clientColor;
+  const input = document.querySelector(`.apTaskInput[data-client-id="${clientId}"]`);
+  const title = input ? input.value.trim() : '';
+  if(!title){ toast('Type what you\'re working on first'); return; }
+  try{
+    await addDoc(collection(db,'tt_tasks'), {
+      clientId, clientName, clientColor,
+      title, dueDate: null, priority: 'medium',
+      status:'pending', remarks:'', remarksUpdatedAt: null,
+      ownerUid: currentUser.uid, ownerEmail: currentUser.email, createdAt: serverTimestamp()
+    });
+    if(input) input.value = '';
+    toast('Task added');
+  }catch(err){ toast('Could not add task: '+err.message); }
 }
 
 // A staff member can't punch out while any task they added is still sitting
@@ -1410,10 +1457,10 @@ function renderTasks(){
   if(list.length===0){ wrap.innerHTML=''; empty.style.display='block'; return; }
   empty.style.display='none';
 
-  wrap.innerHTML = list.map(t=>{
+  const taskItemHtml = (t)=>{
     const status = t.status || 'pending';
     const metaLine = `
-      <span><span class="swatch" style="background:${t.clientColor||'#B8934A'}"></span>${escapeHtml(t.clientName||'—')}</span>
+      ${isAdmin ? `<span><span class="swatch" style="background:${t.clientColor||'#B8934A'}"></span>${escapeHtml(t.clientName||'—')}</span>` : ''}
       ${t.dueDate ? `<span>Due ${t.dueDate}</span>` : ''}
       <span class="priTag ${t.priority}">${t.priority}</span>
       ${isAdmin ? `<span class="assigneeTag">${t.ownerEmail ? 'By '+escapeHtml(t.ownerEmail) : ''}</span>` : ''}
@@ -1445,7 +1492,27 @@ function renderTasks(){
       </div>
       <button class="taskDel" data-id="${t.id}" data-action="delTask">✕</button>
     </div>`;
-  }).join('');
+  };
+
+  if(isAdmin){
+    wrap.innerHTML = list.map(taskItemHtml).join('');
+  } else {
+    // Staff view: grouped by client, so "My Tasks" reads as one list per client.
+    const groups = {};
+    const order = [];
+    list.forEach(t=>{
+      const key = t.clientId || 'none';
+      if(!groups[key]){ groups[key] = { name: t.clientName||'Unknown client', color: t.clientColor||'#B8934A', items: [] }; order.push(key); }
+      groups[key].items.push(t);
+    });
+    wrap.innerHTML = order.map(key=>{
+      const g = groups[key];
+      return `<div class="clientTaskGroup">
+        <div class="groupHeader"><span class="swatch" style="background:${g.color}"></span>${escapeHtml(g.name)}</div>
+        ${g.items.map(taskItemHtml).join('')}
+      </div>`;
+    }).join('');
+  }
 
   wrap.querySelectorAll('[data-action="delTask"]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
