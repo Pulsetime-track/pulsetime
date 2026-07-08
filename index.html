@@ -142,6 +142,18 @@
   .punchBtn.out{ background:var(--red); color:#fff; }
   .punchBtn.out:hover{ background:#a8422e; }
   .punchBtn:disabled{ background:#c9c3b3; color:#8a8370; cursor:not-allowed; }
+
+  .activePunchItem{
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
+    background:var(--paper); color:var(--text-dark); border-radius:10px;
+    padding:16px 20px; margin-bottom:10px; border-left:4px solid var(--brass); box-shadow:var(--shadow);
+  }
+  .activePunchItem .apInfo{ display:flex; flex-direction:column; gap:2px; }
+  .activePunchItem .apInfo b{ font-size:14px; }
+  .activePunchItem .apInfo span{ font-size:11px; color:#6b6455; }
+  .activePunchItem .apElapsed{ font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:700; color:var(--ink); }
+  .activePunchItem .apOutBtn{ background:var(--red); color:#fff; font-weight:700; padding:10px 20px; border-radius:6px; font-size:13px; }
+  .activePunchItem .apOutBtn:hover{ background:#a8422e; }
   .stampFlash{ position:absolute; inset:0; background:var(--brass); opacity:0; pointer-events:none; }
   .stampFlash.flash{ animation: flashIt .35s ease; }
   @keyframes flashIt{ 0%{opacity:.35;} 100%{opacity:0;} }
@@ -309,7 +321,7 @@
       <div class="mark"></div>
       <div>
         <h1>PulseTime</h1>
-        <div class="utcNow mono" id="utcNow">--:--:-- UTC</div>
+        <div class="utcNow mono" id="utcNow">--:--:-- PHT</div>
       </div>
     </div>
     <div class="topRight">
@@ -332,16 +344,17 @@
       <div class="eyebrow">Client local time</div>
       <div class="clockStrip" id="clockStrip"></div>
 
+      <div id="activePunchesWrap" style="display:none; margin-bottom:20px;">
+        <div class="eyebrow">Currently punched in</div>
+        <div id="activePunchesList"></div>
+      </div>
+
       <div class="punchCard">
         <div class="stampFlash" id="stampFlash"></div>
         <div class="punchInner">
           <div class="punchSelect">
             <label for="punchClientSelect" style="color:#6b6455;">Client</label>
             <select id="punchClientSelect"></select>
-          </div>
-          <div class="punchDisplay">
-            <div class="elapsedLabel">Elapsed</div>
-            <div class="elapsed idle mono" id="elapsedDisplay">00:00:00</div>
           </div>
           <button class="punchBtn in" id="punchBtn">Punch In</button>
         </div>
@@ -642,7 +655,8 @@ let entries = [];       // {id, clientId, clientName, start, end}
 let tasks = [];         // {id, clientId, clientName, title, dueDate, status, priority}
 let teamMembers = [];   // {id, email, role, status}
 let unsubClients=null, unsubEntries=null, unsubTasks=null, unsubTeam=null;
-let runningEntry = null; // currently punched-in entry, live from entries
+let runningEntries = []; // this user's currently punched-in entries, live from entries — can be more than one client at once
+let elapsedTimer = null; // single interval that ticks every visible active-punch display
 
 // ---------------- Toast ----------------
 function toast(msg){
@@ -846,9 +860,9 @@ function attachListeners(){
     : query(collection(db,'tt_entries'), where('ownerUid','==',uid), orderBy('start','desc'));
   unsubEntries = onSnapshot(entriesQ, (snap)=>{
     entries = snap.docs.map(d=>({id:d.id, ...d.data()}));
-    runningEntry = entries.find(e=> !e.end && e.ownerUid===uid) || null;
+    runningEntries = entries.filter(e=> !e.end && e.ownerUid===uid);
     renderEntries();
-    updatePunchUI();
+    populateClientSelects(); // refresh which clients are still available to punch into
   }, (err)=> toast('Entries sync error: '+err.message));
 
   // Admins see every task submitted by the whole team; staff only see tasks they added themselves.
@@ -989,7 +1003,8 @@ function renderClockStrip(){
 
 function tickClocks(){
   const now = new Date();
-  document.getElementById('utcNow').textContent = now.toISOString().substring(11,19) + ' UTC';
+  document.getElementById('utcNow').textContent =
+    new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false,timeZone:'Asia/Manila'}).format(now) + ' PHT';
   document.querySelectorAll('.clockCard').forEach(card=>{
     const tz = card.dataset.tz;
     try{
@@ -1009,14 +1024,20 @@ function populateClientSelects(){
   const taskSel = document.getElementById('taskClient');
   const reportClientSel = document.getElementById('reportClientFilter');
   const prevPunch = punchSel.value;
-  punchSel.innerHTML = clients.length ? opts : '<option value="">No clients yet</option>';
+
+  const runningClientIds = new Set(runningEntries.map(e=>e.clientId));
+  const availableClients = clients.filter(c=> !runningClientIds.has(c.id));
+  const availOpts = availableClients.map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  punchSel.innerHTML = availableClients.length ? availOpts
+    : (clients.length ? '<option value="">All clients already punched in</option>' : '<option value="">No clients yet</option>');
+
   taskSel.innerHTML = clients.length ? opts : '<option value="">No clients yet</option>';
   if(reportClientSel){
     const prevReportClient = reportClientSel.value;
     reportClientSel.innerHTML = '<option value="">All clients</option>' + opts;
     if(clients.some(c=>c.id===prevReportClient)) reportClientSel.value = prevReportClient;
   }
-  if(clients.some(c=>c.id===prevPunch)) punchSel.value = prevPunch;
+  if(availableClients.some(c=>c.id===prevPunch)) punchSel.value = prevPunch;
   updatePunchUI();
 }
 
@@ -1060,29 +1081,39 @@ function renderClients(){
 
 // ---------------- Punch in/out ----------------
 const punchBtn = document.getElementById('punchBtn');
-const elapsedDisplay = document.getElementById('elapsedDisplay');
-let elapsedTimer = null;
 
 function updatePunchUI(){
   const sel = document.getElementById('punchClientSelect');
-  if(runningEntry){
-    sel.value = runningEntry.clientId;
-    sel.disabled = true;
-    punchBtn.textContent = 'Punch Out';
-    punchBtn.className = 'punchBtn out';
-    punchBtn.disabled = clients.length===0;
-    elapsedDisplay.classList.remove('idle');
-    startElapsedTimer();
-  } else {
-    sel.disabled = false;
-    punchBtn.textContent = 'Punch In';
-    punchBtn.className = 'punchBtn in';
-    punchBtn.disabled = clients.length===0;
-    elapsedDisplay.classList.add('idle');
-    stopElapsedTimer();
-    elapsedDisplay.textContent = '00:00:00';
-  }
+  const hasAvailableClient = sel.options.length > 0 && sel.value !== '';
+  punchBtn.disabled = !hasAvailableClient;
+  renderActivePunches();
   updatePendingTaskWarning();
+}
+
+function renderActivePunches(){
+  const wrap = document.getElementById('activePunchesWrap');
+  const list = document.getElementById('activePunchesList');
+  if(runningEntries.length === 0){
+    wrap.style.display = 'none';
+    list.innerHTML = '';
+    stopElapsedTimer();
+    return;
+  }
+  wrap.style.display = 'block';
+  list.innerHTML = runningEntries.map(e=>`
+    <div class="activePunchItem" data-id="${e.id}">
+      <div class="apInfo">
+        <b><span class="swatch" style="background:${e.clientColor||'#B8934A'}"></span>${escapeHtml(e.clientName||'—')}</b>
+        <span>Punched in — ${e.clientTimezone ? e.clientTimezone.replace('_',' ') : ''}</span>
+      </div>
+      <div class="apElapsed mono" data-elapsed-for="${e.id}">00:00:00</div>
+      <button class="apOutBtn" data-id="${e.id}" data-action="punchOut">Punch Out</button>
+    </div>
+  `).join('');
+  list.querySelectorAll('[data-action="punchOut"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> handlePunchOut(btn.dataset.id));
+  });
+  startElapsedTimer();
 }
 
 // A staff member can't punch out while any task they added is still sitting
@@ -1094,7 +1125,7 @@ function pendingOwnTasksForCurrentUser(){
 function updatePendingTaskWarning(){
   const banner = document.getElementById('pendingTaskWarning');
   if(!banner) return;
-  if(!isAdmin && runningEntry){
+  if(!isAdmin && runningEntries.length > 0){
     const blocking = pendingOwnTasksForCurrentUser();
     if(blocking.length > 0){
       banner.style.display = 'block';
@@ -1108,10 +1139,13 @@ function updatePendingTaskWarning(){
 function startElapsedTimer(){
   stopElapsedTimer();
   const tick = ()=>{
-    if(!runningEntry || !runningEntry.start) return;
-    const startMs = runningEntry.start.toMillis ? runningEntry.start.toMillis() : new Date(runningEntry.start).getTime();
-    const diff = Date.now() - startMs;
-    elapsedDisplay.textContent = formatDuration(diff);
+    runningEntries.forEach(e=>{
+      if(!e.start) return;
+      const el = document.querySelector(`[data-elapsed-for="${e.id}"]`);
+      if(!el) return;
+      const startMs = e.start.toMillis ? e.start.toMillis() : new Date(e.start).getTime();
+      el.textContent = formatDuration(Date.now() - startMs);
+    });
   };
   tick();
   elapsedTimer = setInterval(tick, 1000);
@@ -1127,8 +1161,8 @@ function formatDuration(ms){
   return `${h}:${m}:${s}`;
 }
 
-punchBtn.addEventListener('click', async ()=>{
-  if(runningEntry && !isAdmin){
+async function handlePunchOut(entryId){
+  if(!isAdmin){
     const blocking = pendingOwnTasksForCurrentUser();
     if(blocking.length > 0){
       toast(`Update ${blocking.length} pending task${blocking.length>1?'s':''} before punching out`);
@@ -1139,26 +1173,27 @@ punchBtn.addEventListener('click', async ()=>{
     }
   }
   flashStamp();
-  if(runningEntry){
-    // punch out
-    try{
-      await updateDoc(doc(db,'tt_entries',runningEntry.id), { end: serverTimestamp() });
-      toast('Punched out');
-    }catch(err){ toast('Could not punch out: '+err.message); }
-  } else {
-    const sel = document.getElementById('punchClientSelect');
-    const clientId = sel.value;
-    const client = clients.find(c=>c.id===clientId);
-    if(!client){ toast('Add a client first'); return; }
-    try{
-      await addDoc(collection(db,'tt_entries'), {
-        clientId: client.id, clientName: client.name, clientColor: client.color||'#B8934A',
-        clientTimezone: client.timezone,
-        start: serverTimestamp(), end: null, ownerUid: currentUser.uid, ownerEmail: currentUser.email
-      });
-      toast('Punched in to '+client.name);
-    }catch(err){ toast('Could not punch in: '+err.message); }
-  }
+  try{
+    await updateDoc(doc(db,'tt_entries',entryId), { end: serverTimestamp() });
+    toast('Punched out');
+  }catch(err){ toast('Could not punch out: '+err.message); }
+}
+
+punchBtn.addEventListener('click', async ()=>{
+  const sel = document.getElementById('punchClientSelect');
+  const clientId = sel.value;
+  const client = clients.find(c=>c.id===clientId);
+  if(!client){ toast('Add a client first'); return; }
+  if(runningEntries.some(e=> e.clientId===clientId)){ toast('Already punched in to '+client.name); return; }
+  flashStamp();
+  try{
+    await addDoc(collection(db,'tt_entries'), {
+      clientId: client.id, clientName: client.name, clientColor: client.color||'#B8934A',
+      clientTimezone: client.timezone,
+      start: serverTimestamp(), end: null, ownerUid: currentUser.uid, ownerEmail: currentUser.email
+    });
+    toast('Punched in to '+client.name);
+  }catch(err){ toast('Could not punch in: '+err.message); }
 });
 
 function flashStamp(){
