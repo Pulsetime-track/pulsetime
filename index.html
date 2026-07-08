@@ -857,7 +857,7 @@ function applyRoleUI(){
   if(clientsTab) clientsTab.style.display = isAdmin ? '' : 'none';
   if(teamTab) teamTab.style.display = isAdmin ? '' : 'none';
   if(reportsTab) reportsTab.style.display = isAdmin ? '' : 'none';
-  document.getElementById('staffTaskFormWrap').style.display = isAdmin ? 'none' : 'block';
+  document.getElementById('staffTaskFormWrap').style.display = 'none';
   document.getElementById('adminTaskFilterWrap').style.display = isAdmin ? 'block' : 'none';
   document.getElementById('taskBoardTitle').textContent = isAdmin ? 'Tasks submitted by your team' : 'Your tasks';
   // if a staff account is currently sitting on a hidden tab, snap back to Time Clock
