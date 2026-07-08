@@ -167,6 +167,9 @@
   .swatch{ width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:7px; }
   .durationCell{ font-family:'IBM Plex Mono',monospace; font-weight:600; color:var(--brass-bright); }
   .runningPill{ background:var(--green); color:#fff; font-size:10px; padding:2px 8px; border-radius:20px; font-weight:700; letter-spacing:.05em; }
+  .adjustedPill{ background:var(--brass); color:var(--ink); font-size:10px; padding:2px 8px; border-radius:20px; font-weight:700; letter-spacing:.05em; cursor:help; }
+  .rowActions .editBtn{ color:var(--brass-bright); }
+  .rowActions .editBtn:hover{ color:var(--brass); }
   .emptyState{ text-align:center; padding:40px 10px; color:var(--text-muted); font-size:13px; }
   .rowActions button{ background:transparent; color:var(--text-muted); font-size:11px; padding:4px 8px; border-radius:4px; }
   .rowActions button:hover{ color:var(--red); }
@@ -365,7 +368,7 @@
       <div class="card">
         <table id="entriesTable">
           <thead>
-            <tr id="entriesHeadRow"><th>Client</th><th id="byColHead" style="display:none;">By</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th></th></tr>
+            <tr id="entriesHeadRow"><th>Client</th><th id="byColHead" style="display:none;">By</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th>Adjusted</th><th></th></tr>
           </thead>
           <tbody id="entriesBody"></tbody>
         </table>
@@ -518,6 +521,24 @@
       </div>
     </section>
   </main>
+</div>
+
+<!-- ================= EDIT ENTRY MODAL (admin only) ================= -->
+<div id="editEntryModal" style="display:none; position:fixed; inset:0; background:rgba(20,25,38,0.72); z-index:200; align-items:center; justify-content:center; padding:20px;">
+  <div class="authCard" style="max-width:420px; text-align:left;">
+    <div class="eyebrow" style="color:#b8934a;">Adjust punch times</div>
+    <h1 id="editEntryClientLabel" style="font-size:20px;">—</h1>
+    <p class="sub">Times below are in the client's own local timezone (<span id="editEntryTzLabel"></span>), same as shown on the Time Clock tab.</p>
+    <label for="editEntryStart">Punch In</label>
+    <input type="datetime-local" id="editEntryStart">
+    <label for="editEntryEnd">Punch Out (leave blank if still running)</label>
+    <input type="datetime-local" id="editEntryEnd">
+    <div class="authError" id="editEntryError"></div>
+    <div style="display:flex; gap:10px; margin-top:6px;">
+      <button class="btnPrimary" id="editEntrySaveBtn" style="flex:1;">Save changes</button>
+      <button class="signOutBtn" id="editEntryCancelBtn" style="flex:1; padding:12px; border-radius:6px;">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1216,6 +1237,12 @@ function renderEntries(){
     const inStr = startD ? new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) + ' ' + tzAbbr(startD, tz) : '—';
     const outStr = endD ? new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) + ' ' + tzAbbr(endD, tz) : '';
     const durStr = endD && startD ? formatDuration(endD - startD) : null;
+    let adjustedTitle = '';
+    if(e.edited){
+      const editedD = e.editedAt && e.editedAt.toDate ? e.editedAt.toDate() : null;
+      const editedStr = editedD ? new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(editedD) : '';
+      adjustedTitle = `Adjusted by ${e.editedBy||'admin'}${editedStr ? ' on '+editedStr : ''}`;
+    }
     return `<tr>
       <td><span class="swatch" style="background:${e.clientColor||'#B8934A'}"></span>${escapeHtml(e.clientName||'—')}</td>
       <td style="display:${isAdmin?'':'none'};">${escapeHtml(e.ownerEmail||'—')}</td>
@@ -1223,7 +1250,8 @@ function renderEntries(){
       <td class="mono">${inStr}</td>
       <td class="mono">${outStr || '<span class="runningPill">RUNNING</span>'}</td>
       <td class="durationCell">${durStr ? formatHM(endD-startD) : '—'}</td>
-      <td class="rowActions">${isAdmin ? `<button data-id="${e.id}" data-action="delEntry">Delete</button>` : ''}</td>
+      <td>${e.edited ? `<span class="adjustedPill" title="${escapeHtml(adjustedTitle)}">Adjusted</span>` : ''}</td>
+      <td class="rowActions">${isAdmin ? `<button class="editBtn" data-id="${e.id}" data-action="editEntry">Edit</button><button data-id="${e.id}" data-action="delEntry">Delete</button>` : ''}</td>
     </tr>`;
   }).join('');
   body.querySelectorAll('[data-action="delEntry"]').forEach(btn=>{
@@ -1232,7 +1260,93 @@ function renderEntries(){
       await deleteDoc(doc(db,'tt_entries',btn.dataset.id));
     });
   });
+  body.querySelectorAll('[data-action="editEntry"]').forEach(btn=>{
+    btn.addEventListener('click', ()=> openEditEntryModal(btn.dataset.id));
+  });
 }
+
+// ---------------- Edit entry modal (admin only) ----------------
+// Formats a UTC instant as a "YYYY-MM-DDTHH:mm" wall-clock string in a given
+// IANA timezone, suitable for a <input type="datetime-local"> value.
+function toDatetimeLocalString(date, tz){
+  const parts = new Intl.DateTimeFormat('en-US',{
+    timeZone:tz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'
+  }).formatToParts(date).reduce((acc,p)=>{ acc[p.type]=p.value; return acc; },{});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+// Returns the UTC offset (in minutes) of a timezone at a given approximate instant.
+function getTzOffsetMinutes(tz, date){
+  const parts = new Intl.DateTimeFormat('en-US',{
+    timeZone:tz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'
+  }).formatToParts(date).reduce((acc,p)=>{ acc[p.type]=p.value; return acc; },{});
+  const asUTC = Date.UTC(+parts.year, +parts.month-1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return (asUTC - date.getTime()) / 60000;
+}
+
+// Converts a "YYYY-MM-DDTHH:mm" wall-clock string, understood as being in
+// the given IANA timezone, into the correct UTC Date instant.
+function zonedTimeToUtc(localStr, tz){
+  const naiveUTC = new Date(localStr + ':00Z');
+  const offsetMin = getTzOffsetMinutes(tz, naiveUTC);
+  return new Date(naiveUTC.getTime() - offsetMin*60000);
+}
+
+let editingEntryId = null;
+let editingEntryTz = 'UTC';
+
+function openEditEntryModal(entryId){
+  const entry = entries.find(e=> e.id===entryId);
+  if(!entry) return;
+  editingEntryId = entryId;
+  editingEntryTz = entry.clientTimezone || 'UTC';
+
+  document.getElementById('editEntryClientLabel').textContent = entry.clientName || 'Time entry';
+  document.getElementById('editEntryTzLabel').textContent = editingEntryTz.replace('_',' ');
+  document.getElementById('editEntryError').textContent = '';
+
+  const startD = entry.start && entry.start.toDate ? entry.start.toDate() : new Date();
+  document.getElementById('editEntryStart').value = toDatetimeLocalString(startD, editingEntryTz);
+
+  const endD = entry.end && entry.end.toDate ? entry.end.toDate() : null;
+  document.getElementById('editEntryEnd').value = endD ? toDatetimeLocalString(endD, editingEntryTz) : '';
+
+  document.getElementById('editEntryModal').style.display = 'flex';
+}
+
+function closeEditEntryModal(){
+  document.getElementById('editEntryModal').style.display = 'none';
+  editingEntryId = null;
+}
+
+document.getElementById('editEntryCancelBtn').addEventListener('click', closeEditEntryModal);
+document.getElementById('editEntryModal').addEventListener('click', (e)=>{
+  if(e.target.id === 'editEntryModal') closeEditEntryModal();
+});
+
+document.getElementById('editEntrySaveBtn').addEventListener('click', async ()=>{
+  if(!editingEntryId) return;
+  const errEl = document.getElementById('editEntryError');
+  errEl.textContent = '';
+
+  const startVal = document.getElementById('editEntryStart').value;
+  const endVal = document.getElementById('editEntryEnd').value;
+  if(!startVal){ errEl.textContent = 'Punch In time is required.'; return; }
+
+  const startUtc = zonedTimeToUtc(startVal, editingEntryTz);
+  const endUtc = endVal ? zonedTimeToUtc(endVal, editingEntryTz) : null;
+  if(endUtc && endUtc <= startUtc){ errEl.textContent = 'Punch Out must be after Punch In.'; return; }
+
+  try{
+    await updateDoc(doc(db,'tt_entries',editingEntryId), {
+      start: Timestamp.fromDate(startUtc),
+      end: endUtc ? Timestamp.fromDate(endUtc) : null,
+      edited: true, editedBy: currentUser.email, editedAt: serverTimestamp()
+    });
+    toast('Time entry updated');
+    closeEditEntryModal();
+  }catch(err){ errEl.textContent = 'Could not save: '+err.message; }
+});
 
 // Returns a short zone label like "PHT" or "GMT-5" for a given moment + IANA timezone.
 function tzAbbr(date, tz){
