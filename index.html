@@ -265,6 +265,13 @@
   .reportStat .statLabel{ font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); margin-bottom:6px; }
   .reportStat .statValue{ font-family:'IBM Plex Mono',monospace; font-size:24px; font-weight:600; color:var(--brass-bright); }
 
+  .reportClientRow:hover{ background:rgba(184,147,74,0.08); }
+  .chevron{ display:inline-block; width:14px; color:var(--brass-bright); font-size:11px; }
+  .breakdownTable{ width:100%; border-collapse:collapse; font-size:12px; background:#242e47; }
+  .breakdownTable th{ text-align:left; padding:8px 16px; color:var(--text-muted); font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.05em; border-bottom:1px solid #3a4560; }
+  .breakdownTable td{ padding:8px 16px; border-bottom:1px solid #2c3652; }
+  .breakdownTable tr:last-child td{ border-bottom:none; }
+
   .formRow{ display:flex; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
   .formRow > div{ flex:1; min-width:140px; }
 
@@ -1573,8 +1580,8 @@ function runReport(){
     totalMs += durMs;
 
     const cKey = e.clientName || 'Unknown client';
-    if(!byClient[cKey]) byClient[cKey] = { count:0, ms:0 };
-    byClient[cKey].count++; byClient[cKey].ms += durMs;
+    if(!byClient[cKey]) byClient[cKey] = { count:0, ms:0, items:[] };
+    byClient[cKey].count++; byClient[cKey].ms += durMs; byClient[cKey].items.push(e);
 
     const sKey = e.ownerEmail || 'Unknown';
     if(!byStaff[sKey]) byStaff[sKey] = { count:0, ms:0 };
@@ -1590,14 +1597,58 @@ function runReport(){
     <div class="reportStat"><div class="statLabel">Teammates</div><div class="statValue">${Object.keys(byStaff).length}</div></div>
   `;
 
-  // By client table
+  // By client table — each row expands to show the individual entries behind that total.
   const clientBody = document.getElementById('reportClientBody');
   const clientEmpty = document.getElementById('reportClientEmpty');
   const clientRows = Object.entries(byClient).sort((a,b)=> b[1].ms - a[1].ms);
   clientEmpty.style.display = clientRows.length===0 ? 'block' : 'none';
-  clientBody.innerHTML = clientRows.map(([name,v])=> `
-    <tr><td>${escapeHtml(name)}</td><td>${v.count}</td><td class="durationCell">${formatHM(v.ms)}</td></tr>
-  `).join('');
+  clientBody.innerHTML = clientRows.map(([name,v], idx)=>{
+    const rowId = `reportClientDetail${idx}`;
+    const itemsSorted = v.items.slice().sort((a,b)=> b.start.toDate() - a.start.toDate());
+    const breakdownRows = itemsSorted.map(e=>{
+      const tz = e.clientTimezone || 'UTC';
+      const startD = e.start.toDate();
+      const endD = e.end.toDate();
+      const dateStr = new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:tz}).format(startD);
+      const inStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(startD) + ' ' + tzAbbr(startD, tz);
+      const outStr = new Intl.DateTimeFormat('en-US',{hour:'2-digit',minute:'2-digit',timeZone:tz}).format(endD) + ' ' + tzAbbr(endD, tz);
+      const durStr = formatHM(endD - startD);
+      const adjustedTag = e.edited ? `<span class="adjustedPill" title="Adjusted by ${escapeHtml(e.editedBy||'admin')}">Adjusted</span>` : '';
+      return `<tr>
+        <td>${escapeHtml(e.ownerEmail||'—')}</td>
+        <td>${dateStr}</td>
+        <td class="mono">${inStr}</td>
+        <td class="mono">${outStr}</td>
+        <td class="durationCell">${durStr}</td>
+        <td>${adjustedTag}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <tr class="reportClientRow" data-target="${rowId}" style="cursor:pointer;">
+        <td><span class="chevron" data-chevron-for="${rowId}">▸</span> ${escapeHtml(name)}</td>
+        <td>${v.count}</td>
+        <td class="durationCell">${formatHM(v.ms)}</td>
+      </tr>
+      <tr class="reportClientDetailRow" id="${rowId}" style="display:none;">
+        <td colspan="3" style="padding:0;">
+          <table class="breakdownTable">
+            <thead><tr><th>By</th><th>Date</th><th>In</th><th>Out</th><th>Duration</th><th>Adjusted</th></tr></thead>
+            <tbody>${breakdownRows}</tbody>
+          </table>
+        </td>
+      </tr>`;
+  }).join('');
+
+  clientBody.querySelectorAll('.reportClientRow').forEach(row=>{
+    row.addEventListener('click', ()=>{
+      const targetId = row.dataset.target;
+      const detailRow = document.getElementById(targetId);
+      const chevron = row.querySelector(`[data-chevron-for="${targetId}"]`);
+      const isOpen = detailRow.style.display !== 'none';
+      detailRow.style.display = isOpen ? 'none' : 'table-row';
+      if(chevron) chevron.textContent = isOpen ? '▸' : '▾';
+    });
+  });
 
   // By teammate table
   const staffBody = document.getElementById('reportStaffBody');
